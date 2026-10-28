@@ -103,7 +103,7 @@ glarchive="$glcache/ps5-opengl-sdk-1.0.0.tar.gz"
 if [[ ! -f "$glcache/ps5-opengl-sdk-1.0.0/sdk/manifest.sha256" ]]; then
     mkdir -p "$glcache"
     curl -fL --retry 2 --max-time 300 \
-        https://github.com/MyLuxy/overdrive-deps/releases/download/ps5-opengl-v1.0.0/ps5-opengl-sdk-1.0.0.tar.gz \
+        https://github.com/JVK3R/ps5-opengl/releases/download/v1.0.0/ps5-opengl-sdk-1.0.0.tar.gz \
         -o "$glarchive.part"
     echo "f93643c04c843d56143b00951df1f8042ea7706ae9f19e4e9abf158e1ead77c5  $glarchive.part" | sha256sum --check --status
     mv "$glarchive.part" "$glarchive"
