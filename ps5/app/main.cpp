@@ -425,10 +425,11 @@ void * run_server(void *) {
 
 // ---- the RPC worker -----------------------------------------------------------------
 // With /data/PS5LM/rpc.txt the GPU is lent to a llama.cpp elsewhere (the PC's
-// llama-server --rpc <PS5 IP>:50052) instead of holding a model of its own:
+// llama-server --rpc <PS5 IP>:8082) instead of holding a model of its own:
 // ggml's RPC server takes its share of the layers into this GPU's memory.
-// rpc.txt holds the endpoint (default 0.0.0.0:50052) and, on a line of its
+// rpc.txt holds the endpoint (default 0.0.0.0:8082) and, on a line of its
 // own, "cache" to keep large tensors in rpc-cache for the next load.
+// A title may not bind the high ports: 50052, ggml's usual, fails with EACCES.
 
 std::string        g_rpc_endpoint;
 std::string        g_rpc_cache;
@@ -444,7 +445,7 @@ void * run_rpc(void *) {
 }
 
 bool start_rpc(StatsCollector & stats) {
-    g_rpc_endpoint = "0.0.0.0:50052";
+    g_rpc_endpoint = "0.0.0.0:8082";
     for (const auto & line : read_lines(kRpc)) {
         if (line == "cache") {
             mkdir(kRpcCache, 0777);
