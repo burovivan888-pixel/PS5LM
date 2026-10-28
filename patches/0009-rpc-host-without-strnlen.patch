@@ -1,0 +1,19 @@
+diff --git a/ggml/src/ggml-rpc/ggml-rpc.cpp b/ggml/src/ggml-rpc/ggml-rpc.cpp
+index 45fa8a4..af07e21 100644
+--- a/ggml/src/ggml-rpc/ggml-rpc.cpp
++++ b/ggml/src/ggml-rpc/ggml-rpc.cpp
+@@ -2220,7 +2220,14 @@ bool rpc_server::comm_init(const rpc_msg_comm_init_req & request, rpc_msg_comm_i
+         }
+         state.peer->update_caps(remote_caps);
+     } else {
++#if defined(__PROSPERO__)
++        // The console's string.h declares strnlen only for POSIX 2008, and
++        // ggml builds with _XOPEN_SOURCE=600.
++        const char * nul = (const char *) memchr(request.host, '\0', sizeof(request.host));
++        const std::string host(request.host, nul ? (size_t) (nul - request.host) : sizeof(request.host));
++#else
+         const std::string host(request.host, strnlen(request.host, sizeof(request.host)));
++#endif
+         // rank 0 may not be listening yet, retry for a few seconds
+         for (int i = 0; i < 100 && state.peer == nullptr; i++) {
+             state.peer = socket_t::connect(host.c_str(), request.port);
