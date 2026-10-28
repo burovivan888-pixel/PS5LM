@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <csignal>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -44,6 +45,7 @@
 #include "market.hpp"
 #include "display.hpp"
 #include "ggml-backend.h"
+#include "ggml-rpc.h"
 #include "model_plan.hpp"
 #include "settings.hpp"
 #include "stats.hpp"
@@ -106,6 +108,8 @@ constexpr const char * kChoice      = "/data/PS5LM/model.txt";
 constexpr const char * kEnv         = "/data/PS5LM/env.txt";  // driver and ggml switches, for measuring
 constexpr const char * kTextOnly    = "/data/PS5LM/text-only";  // the last load's projector failed: load without it once
 constexpr const char * kQuit        = "/data/PS5LM/quit";
+constexpr const char * kRpc         = "/data/PS5LM/rpc.txt";  // present: lend the GPU over RPC instead of loading a model
+constexpr const char * kRpcCache    = "/data/PS5LM/rpc-cache";
 constexpr const char * kSettings    = "/data/PS5LM/settings.json";
 constexpr const char * kScratch     = "/data/PS5LM/scratch";
 // The file tools only: a title cannot start processes (no shell command).
@@ -419,6 +423,67 @@ void * run_server(void *) {
     return nullptr;
 }
 
+// ---- the RPC worker -----------------------------------------------------------------
+// With /data/PS5LM/rpc.txt the GPU is lent to a llama.cpp elsewhere (the PC's
+// llama-server --rpc <PS5 IP>:50052) instead of holding a model of its own:
+// ggml's RPC server takes its share of the layers into this GPU's memory.
+// rpc.txt holds the endpoint (default 0.0.0.0:50052) and, on a line of its
+// own, "cache" to keep large tensors in rpc-cache for the next load.
+
+std::string        g_rpc_endpoint;
+std::string        g_rpc_cache;
+ggml_backend_dev_t g_rpc_device = nullptr;
+
+void * run_rpc(void *) {
+    ggml_backend_rpc_start_server(g_rpc_endpoint.c_str(), g_rpc_cache.empty() ? nullptr : g_rpc_cache.c_str(), 1, 1,
+                                  &g_rpc_device);
+    std::printf("ps5lm-app: the RPC server stopped\n");
+    std::fflush(nullptr);
+    g_server_rc = 1;  // the main loop shows it stopped
+    return nullptr;
+}
+
+bool start_rpc(StatsCollector & stats) {
+    g_rpc_endpoint = "0.0.0.0:50052";
+    for (const auto & line : read_lines(kRpc)) {
+        if (line == "cache") {
+            mkdir(kRpcCache, 0777);
+            g_rpc_cache = kRpcCache;
+        } else {
+            g_rpc_endpoint = line;
+        }
+    }
+    for (size_t i = 0; i < ggml_backend_dev_count() && !g_rpc_device; i++) {
+        const auto type = ggml_backend_dev_type(ggml_backend_dev_get(i));
+        if (type == GGML_BACKEND_DEVICE_TYPE_GPU || type == GGML_BACKEND_DEVICE_TYPE_IGPU) {
+            g_rpc_device = ggml_backend_dev_get(i);
+        }
+    }
+    if (!g_rpc_device) {
+        std::printf("ps5lm-app: RPC worker: no GPU device\n");
+        return false;
+    }
+    // A PC that drops the connection mid-reply would otherwise end the title
+    // with SIGPIPE, and a title killed while rendering has lost consoles.
+    signal(SIGPIPE, SIG_IGN);
+    std::printf("ps5lm-app: RPC worker on %s, cache %s\n", g_rpc_endpoint.c_str(),
+                g_rpc_cache.empty() ? "off" : g_rpc_cache.c_str());
+    log_memory("before the RPC worker");
+    Live part;
+    part.model_label = "RPC worker " + g_rpc_endpoint;
+    stats.set_model(part);
+    stats.set_state(ServerState::ready);
+    g_server_rc = -1;
+    pthread_t      rpc;
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, 16u << 20);  // the console's default stack is small
+    pthread_create(&rpc, &attr, run_rpc, nullptr);
+    pthread_detach(rpc);
+    notify(("PS5LM: GPU lent over RPC on " + g_rpc_endpoint).c_str());
+    return true;
+}
+
 // ---- models -------------------------------------------------------------------------
 
 struct Models {
@@ -640,7 +705,7 @@ int main(int, char **) {
     std::printf("ps5lm-app: version " PS5LM_VERSION "\n");
     std::printf("ps5lm-app: /data %s\n", data.c_str());
     if (data.rfind("closed", 0) == 0) {
-        notify("PS5LM cannot write to /data. On OnionHEN, add PPSA99575 to app_jailbreak.exact_title_ids "
+        notify("PS5LM cannot write to /data. On OnionHEN, add PPSA99576 to app_jailbreak.exact_title_ids "
                "in /data/OnionHEN/config.ini and start PS5LM again.");
     }
     // One device-local heap over the whole pool (RADV splits an APU's 2/3 to
@@ -744,6 +809,14 @@ int main(int, char **) {
             if (type == GGML_BACKEND_DEVICE_TYPE_GPU || type == GGML_BACKEND_DEVICE_TYPE_IGPU) {
                 models.budget_gib = free / 1073741824.0;
             }
+        }
+
+        if (access(kRpc, F_OK) == 0) {
+            if (!start_rpc(stats)) {
+                stats.set_state(ServerState::failed);
+            }
+            stats.set_phase("");
+            return;
         }
 
         models.scan(stats);
