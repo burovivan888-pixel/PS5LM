@@ -695,8 +695,12 @@ bool load_font(hui::gfx::Renderer & renderer, const char * name, hui::gfx::Font 
 int main(int, char **) {
     // /data first: the log, the settings and the models live there.
     const std::string data = open_data();
-    // stdout and stderr to a file the PC can fetch over FTP.
-    if (std::freopen(kLog, "w", stdout) != nullptr) {
+    // stdout and stderr to a file the PC can fetch over FTP. Both append: a
+    // stdout at its own offset wrote over stderr's lines (ggml logs there).
+    if (FILE * f = std::fopen(kLog, "w")) {
+        std::fclose(f);
+    }
+    if (std::freopen(kLog, "a", stdout) != nullptr) {
         setvbuf(stdout, nullptr, _IOLBF, 0);
     }
     if (std::freopen(kLog, "a", stderr) != nullptr) {
